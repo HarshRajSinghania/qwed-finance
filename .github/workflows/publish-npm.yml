@@ -35,7 +35,8 @@ jobs:
       # Runs before npm ci/publish so unreviewed code never executes with NODE_AUTH_TOKEN:
       # - tag refs (release events, tag dispatches): tag name must match package.json AND
       #   the tagged commit must already be on main (merged/reviewed)
-      # - dispatch from main: the matching tag must already exist (no untagged publishes)
+      # - dispatch from main: the matching tag must exist AND its contents are checked out,
+      #   so what is published always equals the tagged release even after main advances
       - name: Verify version and tag safety
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         run: |
@@ -50,6 +51,11 @@ jobs:
               echo "::error::No tag v$PKG_VERSION exists - tag the release before publishing from main"
               exit 1
             fi
+            if ! git checkout --quiet --detach "refs/tags/v$PKG_VERSION"; then
+              echo "::error::Tag v$PKG_VERSION could not be checked out"
+              exit 1
+            fi
+            echo "Publishing tagged contents of v$PKG_VERSION (HEAD=$(git rev-parse --short HEAD))"
           else
             echo "::error::Ref $GITHUB_REF_NAME does not match package version $PKG_VERSION"
             exit 1
