@@ -25,5 +25,6 @@ When bumping the version (e.g., `2.1.0` → `3.0.0`), update all of the followin
 7. Open a pin-sync PR updating `.github/workflows/qwed-verify.yml` to the tagged SHA and comment `# vX.Y.Z`
 8. The npm package publishes automatically via `.github/workflows/publish-npm.yml`
    on release publish (requires the `NPM_TOKEN` repository secret; `workflow_dispatch`
-   allows a manual run). Manual fallback: `cd npm && npm ci && npm run build && npm publish`
-   (`npm ci` first — devDependencies provide `tsc` on a fresh checkout)
+   allows a manual run). Manual fallback: `cd npm && npm ci && npm run build && npm publish --access public`
+   (`npm ci` first — devDependencies provide `tsc` on a fresh checkout; `--access public`
+   is required for scoped packages)

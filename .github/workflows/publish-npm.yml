@@ -9,6 +9,13 @@ jobs:
   publish:
     name: Publish @qwed-ai/finance
     runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/@qwed-ai/finance
+    # Stable releases only; manual runs only from main (never arbitrary branches)
+    if: >-
+      (github.event_name == 'release' && github.event.release.prerelease == false) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     permissions:
       contents: read
       id-token: write
@@ -23,10 +30,18 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
+      - name: Verify release tag matches package.json
+        if: github.event_name == 'release'
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_NAME" != "v$PKG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match npm/package.json version $PKG_VERSION"
+            exit 1
+          fi
+
       - run: npm ci
 
-      - run: npm run build
-
+      # prepublishOnly runs npm run build before packing
       - run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
