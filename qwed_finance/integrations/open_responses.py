@@ -258,7 +258,23 @@ class OpenResponsesIntegration:
     # ==================== Verification Functions ====================
     
     def _verify_npv(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Compute NPV — returns COMPUTED status (not verified against LLM claim)."""
+        """Compute NPV — returns COMPUTED status (not verified against LLM claim).
+
+        Declared schema is enforced: out-of-contract arguments (wrong types,
+        bools-as-numbers, out-of-range rate, missing required fields) are
+        REJECTED instead of silently computed (#73).
+        """
+        failure = self._schema_violation("calculate_npv", args)
+        if failure:
+            error, retry_message, violation = failure
+            return self._reject_computation(
+                "calculate_npv",
+                "OpenResponses.calculate_npv",
+                args if isinstance(args, dict) else {},
+                error,
+                retry_message,
+                violation,
+            )
         cashflows = args.get("cashflows", [])
         rate = args.get("rate", 0)
         
@@ -291,10 +307,27 @@ class OpenResponsesIntegration:
         )
     
     def _verify_loan_payment(self, args: Dict[str, Any]) -> VerifiedToolCall:
-        """Compute loan payment — returns COMPUTED status (not verified against LLM claim)."""
+        """Compute loan payment — returns COMPUTED status (not verified against LLM claim).
+
+        Declared schema is enforced: out-of-contract arguments (negative
+        principal, out-of-range rate, non-integer or non-positive months,
+        missing required fields) are REJECTED instead of silently
+        computed (#73).
+        """
+        failure = self._schema_violation("calculate_loan_payment", args)
+        if failure:
+            error, retry_message, violation = failure
+            return self._reject_computation(
+                "calculate_loan_payment",
+                "OpenResponses.calculate_loan_payment",
+                args if isinstance(args, dict) else {},
+                error,
+                retry_message,
+                violation,
+            )
         principal = args.get("principal", 0)
         annual_rate = args.get("annual_rate", 0)
-        months = args.get("months", 1)
+        months = int(args.get("months", 1))
         
         # Compute payment using Decimal for exact arithmetic
         from decimal import Decimal, ROUND_HALF_UP
@@ -423,16 +456,18 @@ class OpenResponsesIntegration:
             receipt=receipt
         )
     
-    def _reject_option_price(
+    def _reject_computation(
         self,
+        tool_name: str,
+        guard_name: str,
         args: Dict[str, Any],
         error: str,
         retry_message: str,
         violation: str,
     ) -> VerifiedToolCall:
-        """Fail closed without pricing. Receipt is logged; exception text is not."""
+        """Fail closed without computing. Receipt is logged; exception text is not."""
         receipt = ReceiptGenerator.create_receipt(
-            guard_name="OpenResponses.price_option",
+            guard_name=guard_name,
             engine=VerificationEngine.SYMPY,
             llm_output=str(args),
             verified=False,
@@ -442,12 +477,113 @@ class OpenResponsesIntegration:
         self.audit_log.log(receipt)
         return VerifiedToolCall(
             status=ToolCallStatus.REJECTED,
-            tool_name="price_option",
+            tool_name=tool_name,
             original_args=args,
             error=error,
             retry_message=retry_message,
             receipt=receipt,
         )
+
+    def _reject_option_price(
+        self,
+        args: Dict[str, Any],
+        error: str,
+        retry_message: str,
+        violation: str,
+    ) -> VerifiedToolCall:
+        """Fail closed without pricing. Receipt is logged; exception text is not."""
+        return self._reject_computation(
+            "price_option",
+            "OpenResponses.price_option",
+            args,
+            error,
+            retry_message,
+            violation,
+        )
+
+    def _check_schema_value(
+        self, name: str, value: Any, spec: Dict[str, Any]
+    ) -> Optional[str]:
+        """Check one value against its declared parameter schema.
+
+        Returns a violation string, or None when the value is in-contract.
+        bool is never accepted as a number/integer (bool is an int subclass).
+        """
+        expected = spec.get("type")
+        if expected == "number":
+            # bool is an int subclass and must not be treated as a number.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return f"{name} must be a finite number"
+            if value != value or value in (float("inf"), float("-inf")):
+                return f"{name} must be a finite number"
+        elif expected == "integer":
+            if isinstance(value, bool):
+                return f"{name} must be an integer"
+            if isinstance(value, float):
+                if value != value or value in (float("inf"), float("-inf")):
+                    return f"{name} must be an integer"
+                if not value.is_integer():
+                    return f"{name} must be an integer"
+            elif not isinstance(value, int):
+                return f"{name} must be an integer"
+        elif expected == "string":
+            if not isinstance(value, str):
+                return f"{name} must be a string"
+        elif expected == "array":
+            if not isinstance(value, list):
+                return f"{name} must be an array"
+            items = spec.get("items", {})
+            for i, item in enumerate(value):
+                item_violation = self._check_schema_value(f"{name}[{i}]", item, items)
+                if item_violation:
+                    return item_violation
+            return None
+        else:
+            return None
+
+        if "enum" in spec and value not in spec["enum"]:
+            return f"{name} must be one of {spec['enum']}"
+        minimum = spec.get("minimum")
+        if minimum is not None and value < minimum:
+            return f"{name} must be >= {minimum}"
+        maximum = spec.get("maximum")
+        if maximum is not None and value > maximum:
+            return f"{name} must be <= {maximum}"
+        return None
+
+    def _schema_violation(
+        self, tool_name: str, args: Any
+    ) -> Optional[tuple]:
+        """Validate args against the tool's declared parameters schema.
+
+        Returns (error, retry_message, violation), or None when in-contract.
+        """
+        schema = self.tools[tool_name].parameters
+        required = schema.get("required", [])
+        if not isinstance(args, dict):
+            return (
+                f"{tool_name} arguments must be an object.",
+                f"Provide {', '.join(required)}.",
+                "arguments must be an object",
+            )
+        for name in required:
+            if name not in args:
+                return (
+                    f"Missing required field: {name}.",
+                    f"Provide {', '.join(required)}.",
+                    f"{name} is required",
+                )
+        for name, subschema in schema.get("properties", {}).items():
+            if name not in args:
+                continue
+            violation = self._check_schema_value(name, args[name], subschema)
+            if violation:
+                return (
+                    f"{violation}.",
+                    f"Provide {', '.join(required)} matching the declared schema.",
+                    violation,
+                )
+        return None
 
     def _verify_option_price(self, args: Dict[str, Any]) -> VerifiedToolCall:
         """Compute Black-Scholes option price, delegating to DerivativesGuard.

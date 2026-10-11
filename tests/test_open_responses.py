@@ -10,6 +10,8 @@ Covers:
 
 import re
 
+import pytest
+
 from qwed_finance.integrations.open_responses import (
     OpenResponsesIntegration,
     ToolCallStatus,
@@ -406,4 +408,115 @@ class TestOptionTypeSchema:
         assert missing.status == ToolCallStatus.REJECTED
         assert empty.status == ToolCallStatus.REJECTED
         assert empty.status != ToolCallStatus.COMPUTED
+
+    @pytest.mark.parametrize(
+        "field",
+        ["spot_price", "strike_price", "time_to_expiry", "volatility", "risk_free_rate"],
+    )
+    @pytest.mark.parametrize(
+        "bad", [True, "100", None, float("nan"), float("inf"), [100]], ids=str
+    )
+    def test_numeric_fields_reject_non_finite_non_numbers(self, field, bad):
+        """Each numeric field rejects bad values with a valid option_type (#73)."""
+        result = self.integration.handle_tool_call(
+            "price_option", self._args(**{field: bad})
+        )
+        assert result.status == ToolCallStatus.REJECTED, (field, bad)
+        assert result.retry_message
+        assert result.receipt is not None
+
+    @pytest.mark.parametrize(
+        "field",
+        ["spot_price", "strike_price", "time_to_expiry", "volatility", "risk_free_rate"],
+    )
+    def test_numeric_fields_reject_missing(self, field):
+        """Each numeric field is required even with a valid option_type (#73)."""
+        args = self._args()
+        del args[field]
+        result = self.integration.handle_tool_call("price_option", args)
+        assert result.status == ToolCallStatus.REJECTED, field
+        assert result.retry_message
+        assert result.receipt is not None
+
+    def test_negative_risk_free_rate_still_computed(self):
+        """Negative rates are legal; only positivity-gated fields reject."""
+        result = self.integration.handle_tool_call(
+            "price_option", self._args(risk_free_rate=-0.01)
+        )
+        assert result.status == ToolCallStatus.COMPUTED
+
+
+class TestComputationSchemaEnforcement:
+    """#73 (scope extension): NPV and loan tools must enforce declared schemas."""
+
+    def setup_method(self):
+        self.integration = OpenResponsesIntegration()
+
+    def _npv(self, **overrides):
+        args = {"cashflows": [-1000, 300, 400, 500], "rate": 0.1}
+        args.update(overrides)
+        return args
+
+    def _loan(self, **overrides):
+        args = {"principal": 100000, "annual_rate": 0.06, "months": 360}
+        args.update(overrides)
+        return args
+
+    def _assert_rejected(self, tool_name, args):
+        result = self.integration.handle_tool_call(tool_name, args)
+        assert result.status == ToolCallStatus.REJECTED, args
+        assert result.retry_message
+        assert result.receipt is not None
+        assert "rejected_invalid_arguments" in str(
+            getattr(result.receipt, "computed_value", "")
+        )
+        return result
+
+    def test_npv_bool_rate_rejected(self):
+        self._assert_rejected("calculate_npv", self._npv(rate=True))
+
+    def test_npv_out_of_range_rate_rejected(self):
+        self._assert_rejected("calculate_npv", self._npv(rate=5))
+
+    def test_npv_missing_rate_rejected(self):
+        args = self._npv()
+        del args["rate"]
+        self._assert_rejected("calculate_npv", args)
+
+    def test_npv_missing_cashflows_rejected(self):
+        args = self._npv()
+        del args["cashflows"]
+        self._assert_rejected("calculate_npv", args)
+
+    def test_npv_non_numeric_cashflow_rejected(self):
+        self._assert_rejected(
+            "calculate_npv", self._npv(cashflows=[-1000, "300", 400])
+        )
+
+    def test_npv_valid_still_computed(self):
+        result = self.integration.handle_tool_call(
+            "calculate_npv", self._npv()
+        )
+        assert result.status == ToolCallStatus.COMPUTED
+
+    def test_loan_negative_principal_rejected(self):
+        self._assert_rejected("calculate_loan_payment", self._loan(principal=-100000))
+
+    def test_loan_negative_months_rejected(self):
+        self._assert_rejected("calculate_loan_payment", self._loan(months=-12))
+
+    def test_loan_bool_months_rejected(self):
+        self._assert_rejected("calculate_loan_payment", self._loan(months=True))
+
+    def test_loan_out_of_range_rate_rejected(self):
+        self._assert_rejected("calculate_loan_payment", self._loan(annual_rate=7))
+
+    def test_loan_empty_payload_rejected(self):
+        self._assert_rejected("calculate_loan_payment", {})
+
+    def test_loan_valid_still_computed(self):
+        result = self.integration.handle_tool_call(
+            "calculate_loan_payment", self._loan()
+        )
+        assert result.status == ToolCallStatus.COMPUTED
 
