@@ -593,6 +593,14 @@ class OpenResponsesIntegration:
         described a call (#73). Missing fields are rejected rather than
         filled from defaults.
         """
+        if not isinstance(args, dict):
+            return self._reject_option_price(
+                {},
+                "price_option arguments must be an object.",
+                "Provide spot_price, strike_price, time_to_expiry, "
+                "risk_free_rate, volatility, and option_type.",
+                "arguments must be an object",
+            )
         option_type = args.get("option_type")
         if option_type not in ("call", "put"):
             return self._reject_option_price(

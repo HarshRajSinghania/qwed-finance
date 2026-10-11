@@ -520,3 +520,14 @@ class TestComputationSchemaEnforcement:
         )
         assert result.status == ToolCallStatus.COMPUTED
 
+    @pytest.mark.parametrize(
+        "tool_name", ["price_option", "calculate_npv", "calculate_loan_payment"]
+    )
+    @pytest.mark.parametrize("bad", [[100, 200], "[100, 200]"])
+    def test_non_dict_args_rejected_not_error(self, tool_name, bad):
+        """Non-dict payloads fail closed as REJECTED with a receipt, not ERROR."""
+        result = self.integration.handle_tool_call(tool_name, bad)
+        assert result.status == ToolCallStatus.REJECTED, (tool_name, bad)
+        assert result.retry_message
+        assert result.receipt is not None
+
