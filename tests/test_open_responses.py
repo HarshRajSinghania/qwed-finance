@@ -531,3 +531,14 @@ class TestComputationSchemaEnforcement:
         assert result.retry_message
         assert result.receipt is not None
 
+    @pytest.mark.parametrize(
+        "tool_name", ["price_option", "calculate_npv", "calculate_loan_payment"]
+    )
+    def test_rejected_non_dict_preserves_submitted_value(self, tool_name):
+        """Distinct rejected payloads must be distinguishable in the audit trail."""
+        first = self.integration.handle_tool_call(tool_name, [100, 200])
+        second = self.integration.handle_tool_call(tool_name, [300, 400])
+        assert first.original_args == [100, 200]
+        assert second.original_args == [300, 400]
+        assert first.receipt.input_hash != second.receipt.input_hash
+

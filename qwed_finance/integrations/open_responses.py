@@ -32,7 +32,7 @@ class VerifiedToolCall:
     """Result of a verified tool call"""
     status: ToolCallStatus
     tool_name: str
-    original_args: Dict[str, Any]
+    original_args: Any
     verified_args: Optional[Dict[str, Any]] = None
     result: Optional[Any] = None
     error: Optional[str] = None
@@ -270,7 +270,7 @@ class OpenResponsesIntegration:
             return self._reject_computation(
                 "calculate_npv",
                 "OpenResponses.calculate_npv",
-                args if isinstance(args, dict) else {},
+                args,
                 error,
                 retry_message,
                 violation,
@@ -320,7 +320,7 @@ class OpenResponsesIntegration:
             return self._reject_computation(
                 "calculate_loan_payment",
                 "OpenResponses.calculate_loan_payment",
-                args if isinstance(args, dict) else {},
+                args,
                 error,
                 retry_message,
                 violation,
@@ -460,12 +460,16 @@ class OpenResponsesIntegration:
         self,
         tool_name: str,
         guard_name: str,
-        args: Dict[str, Any],
+        args: Any,
         error: str,
         retry_message: str,
         violation: str,
     ) -> VerifiedToolCall:
-        """Fail closed without computing. Receipt is logged; exception text is not."""
+        """Fail closed without computing. Receipt is logged; exception text is not.
+
+        args is preserved verbatim (even non-dict payloads) so the audit
+        receipt's input hash and preview identify what was submitted.
+        """
         receipt = ReceiptGenerator.create_receipt(
             guard_name=guard_name,
             engine=VerificationEngine.SYMPY,
@@ -486,7 +490,7 @@ class OpenResponsesIntegration:
 
     def _reject_option_price(
         self,
-        args: Dict[str, Any],
+        args: Any,
         error: str,
         retry_message: str,
         violation: str,
@@ -595,7 +599,7 @@ class OpenResponsesIntegration:
         """
         if not isinstance(args, dict):
             return self._reject_option_price(
-                {},
+                args,
                 "price_option arguments must be an object.",
                 "Provide spot_price, strike_price, time_to_expiry, "
                 "risk_free_rate, volatility, and option_type.",
